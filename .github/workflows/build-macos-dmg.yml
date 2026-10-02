@@ -1,0 +1,86 @@
+name: Build SleepGuard macOS DMG
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build DMG (${{ matrix.arch_name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch_name: arm64
+          - runner: macos-15-intel
+            arch_name: x86_64
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Do not use install-qt-action here. The previous workflow failed inside
+      # its Python bootstrap step. GitHub macOS images already include Homebrew,
+      # so install Qt directly and use Homebrew's Qt CMake package + macdeployqt.
+      - name: Install Qt 6 with Homebrew
+        shell: bash
+        run: |
+          brew update
+          brew install qt
+          QT_PREFIX="$(brew --prefix qt)"
+          echo "QT_PREFIX=$QT_PREFIX" >> "$GITHUB_ENV"
+          echo "$QT_PREFIX/bin" >> "$GITHUB_PATH"
+          echo "Qt prefix: $QT_PREFIX"
+          "$QT_PREFIX/bin/qmake" -v
+          "$QT_PREFIX/bin/macdeployqt" -h | head -n 5
+
+      - name: Show toolchain
+        run: |
+          uname -m
+          sw_vers
+          cmake --version
+          clang++ --version
+          which macdeployqt
+          macdeployqt -h | head -n 3
+
+      - name: Configure
+        shell: bash
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$QT_PREFIX" \
+            -DCMAKE_OSX_ARCHITECTURES="$(uname -m)"
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Create app and DMG
+        shell: bash
+        run: |
+          chmod +x deploy_macos.sh
+          ./deploy_macos.sh
+
+          test -d build/SleepGuard.app
+          test -f build/SleepGuard.dmg
+          mv build/SleepGuard.dmg "build/SleepGuard-${{ matrix.arch_name }}.dmg"
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: SleepGuard-macOS-${{ matrix.arch_name }}
+          path: build/SleepGuard-${{ matrix.arch_name }}.dmg
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: SleepGuard-macOS-app-${{ matrix.arch_name }}
+          path: build/SleepGuard.app
+          if-no-files-found: error
+          retention-days: 14
